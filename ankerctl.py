@@ -29,6 +29,11 @@ from libflagship.pppp import P2PCmdType, P2PSubCmdType, FileTransfer
 from libflagship.ppppapi import FileUploadInfo, PPPPError
 
 
+from dotenv import load_dotenv
+
+load_dotenv()  # take environment variables from .env.
+
+
 class Environment:
     def __init__(self):
         pass
