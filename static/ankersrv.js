@@ -5,7 +5,7 @@ $(function () {
     $("#copyYear").text(new Date().getFullYear());
 
     /**
-     * Handle modal being shown
+     * Handle modal for progress bar being shown
      */
     var popupModalDom = document.getElementById("popupModal");
     var popupModalBS = new bootstrap.Modal(popupModalDom);
@@ -264,6 +264,7 @@ $(function () {
             url,
             badge = null,
             open = null,
+            opened = null,
             close = null,
             error = null,
             message = null,
@@ -275,11 +276,13 @@ $(function () {
             this.badge = badge;
             this.reconnect = reconnect;
             this.open = open;
+            this.opened = opened;
             this.close = close;
             this.error = error;
             this.message = message;
             this.binary = binary;
             this.ws = null;
+            this.is_open = false;
         }
 
         _open() {
@@ -290,7 +293,7 @@ $(function () {
 
         _close() {
             $(this.badge).removeClass("text-bg-warning text-bg-success").addClass("text-bg-danger");
-            console.log(`${this.name} close`);
+            this.is_open = false;
             setTimeout(() => this.connect(), this.reconnect);
             if (this.close)
                 this.close(this.ws);
@@ -299,12 +302,18 @@ $(function () {
         _error() {
             console.log(`${this.name} error`);
             this.ws.close();
+            this.is_open = false;
             if (this.error)
                 this.error(this.ws);
         }
 
         _message(event) {
-            $(this.badge).removeClass("text-bg-danger text-bg-warning").addClass("text-bg-success");
+            if (!this.is_open) {
+                $(this.badge).removeClass("text-bg-danger text-bg-warning").addClass("text-bg-success");
+                this.is_open = true;
+                if (this.opened)
+                    this.opened(event);
+            }
             if (this.message)
                 this.message(event);
         }
@@ -330,6 +339,12 @@ $(function () {
         url: `${location.protocol.replace('http','ws')}//${location.host}/ws/mqtt`,
         badge: "#badge-mqtt",
 
+        opened: function (event) {
+            ["#set-nozzle-temp", "#set-bed-temp"].forEach(function (elem_id) {
+                $(elem_id)[0].disabled = false;
+            });
+        },
+
         message: function (ev) {
             const data = JSON.parse(ev.data);
             if (data.commandType == 1001) {
@@ -344,18 +359,22 @@ $(function () {
             } else if (data.commandType == 1003) {
                 // Returns Nozzle Temp
                 const current = getTemp(data.currentTemp);
-                const target = getTemp(data.targetTemp);
                 $("#nozzle-temp").text(`${current}°C`);
-                if (!isNaN(target)) {
-                    $("#set-nozzle-temp").attr("value", `${target}°C`);
+                if (Object.prototype.hasOwnProperty.call(data, "targetTemp")) {
+                    const target = getTemp(data.targetTemp);
+                    if (!isNaN(target)) {
+                        $("#set-nozzle-temp").text(`${target}°C`);
+                    }
                 }
             } else if (data.commandType == 1004) {
                 // Returns Bed Temp
                 const current = getTemp(data.currentTemp);
-                const target = getTemp(data.targetTemp);
                 $("#bed-temp").text(`${current}°C`);
-                if (!isNaN(target)) {
-                    $("#set-bed-temp").attr("value", `${target}°C`);
+                if (Object.prototype.hasOwnProperty.call(data, "targetTemp")) {
+                    const target = getTemp(data.targetTemp);
+                    if (!isNaN(target)) {
+                        $("#set-bed-temp").text(`${target}°C`);
+                    }
                 }
             } else if (data.commandType == 1006) {
                 // Returns Print Speed
@@ -370,7 +389,7 @@ $(function () {
             }
         },
 
-        close: function () {
+        close: function (ws) {
             $("#print-name").text("");
             $("#time-elapsed").text("00:00:00");
             $("#time-remain").text("00:00:00");
@@ -378,11 +397,15 @@ $(function () {
             $("#progressbar").attr("style", "width: 0%");
             $("#progress").text("0%");
             $("#nozzle-temp").text("0°C");
-            $("#set-nozzle-temp").attr("value", "0°C");
+            $("#set-nozzle-temp").text("0°C");
             $("#bed-temp").text("0°C");
-            $("#set-bed-temp").attr("value", "0°C");
+            $("#set-bed-temp").text("0°C");
             $("#print-speed").text("0mm/s");
             $("#print-layer").text("0 / 0");
+
+            ["#set-nozzle-temp", "#set-bed-temp"].forEach(function (elem_id) {
+                $(elem_id).get(0).disabled = true;
+            });
         },
     });
 
@@ -487,4 +510,112 @@ $(function () {
         sockets.ctrl.ws.send(JSON.stringify({ quality: 1 }));
         return false;
     });
+
+    /**
+     * Handle input modal being shown
+     */
+    var popupModalInputDom = document.getElementById("popupModalInput");
+    var popupModalInputBS = new bootstrap.Modal(popupModalInputDom);
+
+    popupModalInputDom.addEventListener("shown.bs.modal", function (e) {
+        const trigger = e.relatedTarget;
+        const input_id = $(trigger).attr("id");
+        const modalInput = $("#modal-input-elem");
+        setClearModalInput(trigger, $(trigger).attr("title"))
+
+        $("#popupModalInput form").on("submit", function (event) {
+            // do not perform the default submit action
+            event.preventDefault();
+
+            // send the new value to the printer
+            sendNewValueViaMQTT(input_id, modalInput.val());
+
+            // clear modal
+            setClearModalInput(trigger, "", false);
+
+            // remove previous "submit" event handlers
+            $("#popupModalInput form").off("submit");
+
+            // hide modal
+            popupModalInputBS.hide()
+
+            return false;
+        });
+
+        // set input focus
+        modalInput.get(0).focus();
+        modalInput.get(0).select();
+    });
+
+    // from https://stackoverflow.com/a/3561711/15468061
+    function escapeRegex(string) {
+        return string.replace(/[/\-\\^$*+?.()|[\]{}]/g, '\\$&');
+    }
+
+    function setClearModalInput(trigger, title, doSet = true) {
+        const modalInput = $("#modal-input-elem");
+        let unit = "";
+        // loop over all "data-input-*" attributes
+        [].forEach.call(trigger.attributes, function (attr) {
+            console.debug("attr", attr);
+            if (attr.name.startsWith("data-input-")) {
+                const value = attr.value;
+                const attr_name = attr.name.slice(11);
+                switch (attr_name) {
+                    case "icon-class":
+                        if (doSet) {
+                            $("#popupModalGroup").children().addClass(value);
+                        } else {
+                            $("#popupModalGroup").children().removeClass(value);
+                        }
+                        break;
+                    case "unit":
+                        $("#popupModalInputUnit").text(doSet ? value : "");
+                        unit = value;
+                        break;
+                    default:
+                        if (doSet) {
+                            modalInput.attr(attr_name, value);
+                        } else {
+                            modalInput.removeAttr(attr_name);
+                        }
+                }
+            }
+        });
+        if (doSet) {
+            // special handling of title and value
+            $("#modal-input-inner").text(title);
+            const unit_regex = new RegExp(escapeRegex(unit) + "$");
+            const input_value = $(trigger).text().trim().replace(unit_regex, "").trim();
+            modalInput.val(input_value);
+        } else {
+            $("#modal-input-inner").text("");
+            modalInput.val("");
+        }
+    }
+
+    function sendNewValueViaMQTT(input_id, new_value) {
+        let message_data = {};
+        const new_value_int = (new_value === "") ? 0 : parseInt(new_value);
+        switch (input_id) {
+            case "set-nozzle-temp":
+                message_data = {
+                    commandType: MqttMsgType.ZZ_MQTT_CMD_PREHEAT_CONFIG,
+                    nozzle: new_value_int * 100,
+                    value: 1,     // not sure why and if this is needed
+                };
+                break;
+            case "set-bed-temp":
+                message_data = {
+                    commandType: MqttMsgType.ZZ_MQTT_CMD_PREHEAT_CONFIG,
+                    heatbed: new_value_int * 100,
+                    value: 1,     // not sure why and if this is needed
+                };
+                break;
+        }
+        if (message_data) {
+            sockets.ctrl.ws.send(JSON.stringify({ mqtt: message_data }));
+        }
+    }
+
 });
