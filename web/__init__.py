@@ -134,6 +134,10 @@ def ctrl(sock):
     while True:
         msg = json.loads(sock.receive())
 
+        if "mqtt" in msg:
+            with app.svc.borrow("mqttqueue") as mq:
+                mq.client.command(msg["mqtt"])
+
         if "light" in msg:
             with app.svc.borrow("videoqueue") as vq:
                 vq.api_light_state(msg["light"])

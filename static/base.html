@@ -25,7 +25,7 @@
             </header>
         </div>
 
-        <!-- Modal -->
+        <!-- Modal for progress bar -->
         <div class="modal fade" id="popupModal" tabindex="-1">
             <div class="modal-dialog modal-dialog-centered">
                 <div class="modal-content">
@@ -39,6 +39,39 @@
                             </div>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal for user input -->
+        <div class="modal fade" id="popupModalInput" tabindex="-1">
+            <div class="modal-dialog modal-dialog-centered modal-sm">
+                <div class="modal-content">
+                    <form>
+                    <div class="modal-body">
+                        <p id="modal-input-inner"></p>
+                        <div class="input-group">
+                            <div class="input-group-text mx-auto" id="popupModalGroup">
+                                <i class="icon"></i>
+                            </div>
+                            <input
+                                id="modal-input-elem"
+                                name="modal-input-name"
+                                class="form-control text-end"
+                                value=""
+                                title=""
+                                aria-label=""
+                                aria-describedby="popupModalGroup"
+                            />
+                            <div class="input-group-text mx-auto" id="popupModalInputUnit">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary" id="popupModalInputOK">OK</button>
+                    </div>
+                    </form>
                 </div>
             </div>
         </div>
@@ -81,6 +114,7 @@
         {{ macro.static_script("vendor/bootstrap-5.3.0-alpha3-dist/js/bootstrap.bundle.min.js") }}
         {{ macro.static_script("vendor/cash.min.js") }}
         {{ macro.static_script("vendor/jmuxer.min.js") }}
+        {{ macro.static_script("libflagship.js") }}
         {{ macro.static_script("ankersrv.js") }}
     </body>
 </html>
