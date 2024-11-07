@@ -346,13 +346,17 @@ $(function () {
                 const current = getTemp(data.currentTemp);
                 const target = getTemp(data.targetTemp);
                 $("#nozzle-temp").text(`${current}°C`);
-                $("#set-nozzle-temp").attr("value", `${target}°C`);
+                if (!isNaN(target)) {
+                    $("#set-nozzle-temp").attr("value", `${target}°C`);
+                }
             } else if (data.commandType == 1004) {
                 // Returns Bed Temp
                 const current = getTemp(data.currentTemp);
                 const target = getTemp(data.targetTemp);
                 $("#bed-temp").text(`${current}°C`);
-                $("#set-bed-temp").attr("value", `${target}°C`);
+                if (!isNaN(target)) {
+                    $("#set-bed-temp").attr("value", `${target}°C`);
+                }
             } else if (data.commandType == 1006) {
                 // Returns Print Speed
                 const X = getSpeedFactor(data.value);
