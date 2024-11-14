@@ -283,6 +283,7 @@ $(function () {
             this.binary = binary;
             this.ws = null;
             this.is_open = false;
+            this.autoReconnect = reconnect !== false;  // Track if auto-reconnect is enabled
         }
 
         _open() {
@@ -294,7 +295,9 @@ $(function () {
         _close() {
             $(this.badge).removeClass("text-bg-warning text-bg-success").addClass("text-bg-danger");
             this.is_open = false;
-            setTimeout(() => this.connect(), this.reconnect);
+            if (this.autoReconnect) {
+                setTimeout(() => this.connect(), this.reconnect);
+            }
             if (this.close)
                 this.close(this.ws);
         }
@@ -417,6 +420,7 @@ $(function () {
         url: `${location.protocol.replace('http','ws')}${location.host}/ws/video`,
         badge: "#badge-video",
         binary: true,
+        reconnect: false,  // Disable auto-reconnect for video socket
 
         open: function () {
             this.jmuxer = new JMuxer({
@@ -448,6 +452,9 @@ $(function () {
 
             /* Clear video source (to show loading animation) */
             $("#player").attr("src", "");
+            
+            // Update badge state without reconnecting
+            $(this.badge).removeClass("text-bg-warning text-bg-success").addClass("text-bg-danger");
         },
     });
 
@@ -461,11 +468,33 @@ $(function () {
         name: "PPPP socket",
         url: `${location.protocol.replace('http','ws')}//${location.host}/ws/pppp-state`,
         badge: "#badge-pppp",
+        reconnect: false,  // Disable auto-reconnect for PPPP socket
+        
+        message: function(event) {
+            const data = JSON.parse(event.data);
+            if (data.status === "connected") {
+                // Update badge on connected status
+                $(this.badge).removeClass("text-bg-danger text-bg-warning").addClass("text-bg-success");
+            } else if (data.status === "disconnected") {
+                // Update badge on disconnected status
+                $(this.badge).removeClass("text-bg-success text-bg-warning").addClass("text-bg-danger");
+                // Don't auto-reconnect, let server handle reconnection
+                if (this.ws) {
+                    this.ws.close();
+                    delete this.ws;
+                }
+            }
+        },
+
+        close: function() {
+            // Keep last state on close, don't auto-reconnect
+            console.log("PPPP socket closed");
+        }
     });
 
     /* Only connect websockets if #player element exists in DOM (i.e., if we
-     * have a configuration). Otherwise we are constantly trying to make
-     * connections that will never succeed. */
+    * have a configuration). Otherwise we are constantly trying to make
+    * connections that will never succeed. */
     if ($("#badge-mqtt").length) {
         sockets.mqtt.connect();
     }
@@ -475,9 +504,31 @@ $(function () {
     if ($("#badge-pppp").length) {
         sockets.pppp_state.connect();
     }
-    if ($("#player").length) {
-        sockets.video.connect();
-    }
+
+    let videoEnabled = false;
+
+    /**
+     * Video toggle functionality
+     */
+    $("#video-toggle").on("click", function() {
+        videoEnabled = !videoEnabled;
+        if (videoEnabled) {
+            $("#vplayer").show();
+            $(this).html('<i class="bi bi-camera-video-off"></i> Disable Video');
+            sockets.ctrl.ws.send(JSON.stringify({ video_enabled: true }));
+            if (!sockets.video.ws) {
+                sockets.video.connect();
+            }
+        } else {
+            $("#vplayer").hide();
+            $(this).html('<i class="bi bi-camera-video"></i> Enable Video');
+            sockets.ctrl.ws.send(JSON.stringify({ video_enabled: false }));
+            if (sockets.video.ws) {
+                sockets.video.ws.close();
+                delete sockets.video.ws;  // Prevent auto-reconnect
+            }
+        }
+    });
 
     /**
      * On click of element with id "light-on", sends JSON data to wsctrl to turn light on
@@ -500,6 +551,7 @@ $(function () {
      */
     $("#quality-low").on("click", function () {
         sockets.ctrl.ws.send(JSON.stringify({ quality: 0 }));
+        $(this).addClass('active').siblings().removeClass('active');
         return false;
     });
 
@@ -508,6 +560,7 @@ $(function () {
      */
     $("#quality-high").on("click", function () {
         sockets.ctrl.ws.send(JSON.stringify({ quality: 1 }));
+        $(this).addClass('active').siblings().removeClass('active');
         return false;
     });
 

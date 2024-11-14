@@ -104,7 +104,39 @@ def pppp_find_printer_ip_addresses(dumpfile=None):
         yield from _pppp_query_printers(dumpfile=dumpfile)
 
 
-def pppp_send_file(api, fui, data):
+class RateLimiter:
+    def __init__(self, rate_mbps):
+        self.rate_bytes = rate_mbps * 1024 * 1024 / 8  # Convert Mbps to bytes/sec
+        self.last_check = time.time()
+        self.bytes_sent = 0
+    
+    def wait(self, chunk_size):
+        current_time = time.time()
+        time_passed = current_time - self.last_check
+        
+        if time_passed >= 1.0:
+            # Reset counter every second
+            self.bytes_sent = 0
+            self.last_check = current_time
+        elif self.bytes_sent + chunk_size > self.rate_bytes:
+            # Wait until next second if we would exceed the rate limit
+            sleep_time = 1.0 - time_passed
+            time.sleep(sleep_time)
+            self.bytes_sent = 0
+            self.last_check = time.time()
+        
+        self.bytes_sent += chunk_size
+
+
+def pppp_send_file(api, fui, data, rate_limit_mbps=10):
+    """Send file to printer with rate limiting
+    
+    Args:
+        api: PPPP API instance
+        fui: File upload info
+        data: File data bytes
+        rate_limit_mbps: Transfer rate limit in Mbps
+    """
     log.info("Requesting file transfer..")
     api.send_xzyh(str(uuid.uuid4())[:16].encode(), cmd=P2PCmdType.P2P_SEND_FILE)
 
@@ -113,8 +145,13 @@ def pppp_send_file(api, fui, data):
 
     log.info("Sending file contents..")
     blocksize = 1024 * 32
+    rate_limiter = RateLimiter(rate_limit_mbps)
 
     with tqdm(unit="b", total=len(data), unit_scale=True, unit_divisor=1024) as bar:
         for pos, chunk in cli.util.split_chunks(data, blocksize):
+            # Apply rate limiting
+            rate_limiter.wait(len(chunk))
+            
+            # Send chunk
             api.aabb_request(chunk, frametype=FileTransfer.DATA, pos=pos)
             bar.update(len(chunk))

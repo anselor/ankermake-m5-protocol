@@ -225,6 +225,7 @@ class PPPPState(Enum):
     Disconnected = 4
 
 
+
 class AnkerPPPPBaseApi(Thread):
 
     def __init__(self, sock, duid, addr=None):
@@ -282,14 +283,17 @@ class AnkerPPPPBaseApi(Thread):
             except TimeoutError:
                 pass
             except ConnectionResetError:
+                log.info("Connection reset, breaking run loop")
                 break
 
             for idx, ch in enumerate(self.chans):
                 for pkt in ch.poll():
                     self.send(pkt)
 
-        self.send(PktClose())
-
+        # Only send final CLOSE if we haven't received one
+        if not hasattr(self, '_close_received'):
+            log.info("PPPP thread stopping, sending final CLOSE")
+            self.send(PktClose())
         self.stopped.set()
 
     @property
@@ -297,10 +301,31 @@ class AnkerPPPPBaseApi(Thread):
         return Host(afam=AF_INET, addr=self.addr[0], port=self.addr[1])
 
     def process(self, msg):
-
         if msg.type == Type.CLOSE:
-            log.error("CLOSE")
-            raise ConnectionResetError
+            log.error("CLOSE packet received")
+            # Log connection state
+            log.info(f"Connection state at CLOSE:")
+            log.info(f"- Current state: {self.state}")
+            log.info(f"- Address: {self.addr}")
+            log.info(f"- Running: {self.running}")
+            log.info(f"- Stopped: {self.stopped.is_set()}")
+            if hasattr(self, 'sock') and self.sock:
+                try:
+                    local_addr = self.sock.getsockname()
+                    log.info(f"- Local socket: {local_addr}")
+                except:
+                    pass
+            # Log any pending channel data
+            for i, ch in enumerate(self.chans):
+                if ch.rxqueue or ch.txqueue:
+                    log.info(f"Channel {i} state:")
+                    log.info(f"- RX queue size: {len(ch.rxqueue)}")
+                    log.info(f"- TX queue size: {len(ch.txqueue)}")
+            # Log stack trace to see where we are in the code
+            log.info("CLOSE packet received stack trace:", exc_info=True)
+            # Mark that we received a CLOSE
+            self._close_received = True
+            raise ConnectionResetError("CLOSE packet received")
 
         elif msg.type == Type.REPORT_SESSION_READY:
             pkt = PktSessionReady(
@@ -342,8 +367,10 @@ class AnkerPPPPBaseApi(Thread):
 
         elif msg.type == Type.PUNCH_PKT:
             if self.state == PPPPState.Connecting:
-                self.send(PktClose())
+                log.info("Starting PUNCH_PKT handshake")
+                # Send P2P_RDY directly
                 self.send(PktP2pRdy(self.duid))
+                return
 
     def recv(self, timeout=None):
         if self.state in {PPPPState.Idle, PPPPState.Disconnected}:
@@ -354,6 +381,17 @@ class AnkerPPPPBaseApi(Thread):
         if self.dumper:
             self.dumper.rx(data, self.addr)
         msg = Message.parse(data)[0]
+        
+        # Add more context for received CLOSE packets
+        if msg.type == Type.CLOSE:
+            log.info(f"Received CLOSE packet from {self.addr}")
+            if hasattr(self, 'sock') and self.sock:
+                try:
+                    local_addr = self.sock.getsockname()
+                    log.info(f"Local socket: {local_addr}")
+                except:
+                    pass
+            
         log.debug(f"RX <--  {str(msg)[:128]}")
         return msg
 
@@ -365,6 +403,21 @@ class AnkerPPPPBaseApi(Thread):
         if self.dumper:
             self.dumper.tx(resp, self.addr)
         msg = Message.parse(resp)[0]
+        
+        # Add more context for CLOSE packets
+        if msg.type == Type.CLOSE:
+            log.info(f"Sending CLOSE packet:")
+            log.info(f"- Current state: {self.state}")
+            log.info(f"- Address: {self.addr}")
+            if hasattr(self, 'sock') and self.sock:
+                try:
+                    local_addr = self.sock.getsockname()
+                    log.info(f"- Local socket: {local_addr}")
+                except:
+                    pass
+            # Log stack trace to see where CLOSE is being sent from
+            log.info("CLOSE packet stack trace:", exc_info=True)
+            
         log.debug(f"TX  --> {str(msg)[:128]}")
         self.sock.sendto(resp, addr or self.addr)
 
@@ -457,3 +510,4 @@ class AnkerPPPPAsyncApi(AnkerPPPPBaseApi):
                 self.send(pkt)
 
         return msg
+

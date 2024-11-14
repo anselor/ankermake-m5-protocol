@@ -1,73 +1,84 @@
 import uuid
 import logging as log
+import binascii
+import time
+import io
 
 from multiprocessing import Queue
 
 from ..lib.service import Service
 from .. import app
 
-from libflagship.pppp import P2PCmdType, Aabb, FileTransfer
-from libflagship.ppppapi import FileUploadInfo, PPPPError
+from libflagship.pppp import P2PCmdType, FileTransfer, Type
+from libflagship.ppppapi import FileUploadInfo, PPPPError, PPPPState
 
-import cli.mqtt
-import cli.util
+# Import the working implementation from test_transfer.py
+from test_transfer import send_file as test_send_file, RateLimiter
 
 
 class FileTransferService(Service):
+    """Service that handles file transfers to the printer.
+    
+    This service accepts files from clients, caches them in memory,
+    then uses the proven test_transfer.py method to send them to the printer.
+    """
 
-    def api_aabb(self, api, frametype, msg=b"", pos=0):
-        api.send_aabb(msg, frametype=frametype, pos=pos)
+    def __init__(self):
+        super().__init__()
+        self.cached_file = None
+        self.cached_filename = None
 
-    def api_aabb_request(self, api, frametype, msg=b"", pos=0):
-        self.api_aabb(api, frametype, msg, pos)
-        resp = self._tap.get()
-        log.debug(f"{self.name}: Aabb response: {resp}")
-
-    def send_file(self, fd, user_name):
+    def send_file(self, fd, user_name, rate_limit_mbps=10):
+        """Cache file in memory and send it to printer using test_transfer method"""
         try:
+            # Get fresh PPPP service for each transfer
+            self.pppp = app.svc.get("pppp")
             api = self.pppp._api
+            if not api:
+                raise ConnectionError("No pppp connection to printer")
+            log.debug(f"Using PPPP API: state={api.state}")
+            
+            # Wait for Connected state
+            while api.state != PPPPState.Connected:
+                time.sleep(0.1)
+                if api.stopped.is_set():
+                    raise ConnectionError("API thread stopped")
+                    
         except AttributeError:
             raise ConnectionError("No pppp connection to printer")
 
-        data = fd.read()
-        fui = FileUploadInfo.from_data(data, fd.filename, user_name=user_name, user_id="-", machine_id="-")
-        log.info(f"Going to upload {fui.size} bytes as {fui.name!r}")
         try:
-            log.info("Requesting file transfer..")
-            api.send_xzyh(str(uuid.uuid4())[:16].encode(), cmd=P2PCmdType.P2P_SEND_FILE)
+            # Cache file in memory
+            self.cached_file = fd.read()
+            self.cached_filename = fd.filename
+            log.info(f"Cached {len(self.cached_file)} bytes as {self.cached_filename}")
 
-            log.info("Sending file metadata..")
-            self.api_aabb(api, FileTransfer.BEGIN, bytes(fui) + b"\x00")
+            # Create file info
+            fui = FileUploadInfo.from_data(self.cached_file, self.cached_filename, 
+                                         user_name=user_name, user_id="-", machine_id="-")
+            log.info(f"Going to upload {fui.size} bytes as {fui.name!r}")
+            log.debug(f"File MD5: {fui.md5}")
 
-            log.info("Sending file contents..")
-            blocksize = 1024 * 32
-            for pos, chunk in cli.util.split_chunks(data, blocksize):
-                self.api_aabb_request(api, FileTransfer.DATA, chunk, pos)
-
-            log.info("File upload complete. Requesting print start of job.")
-
-            self.api_aabb_request(api, FileTransfer.END)
-        except PPPPError as E:
-            log.error(f"Could not send print job: {E}")
-        else:
+            # Use test_transfer's send_file function
+            test_send_file(api, fui, self.cached_file, rate_limit_mbps)
             log.info("Successfully sent print job")
 
-    def handler(self, data):
-        chan, msg = data
-        if isinstance(msg, Aabb):
-            self._tap.put(msg)
+        except Exception as e:
+            log.error(f"Could not send print job: {e}")
+            raise
+        finally:
+            # Clear cache and release PPPP service
+            self.cached_file = None
+            self.cached_filename = None
+            app.svc.put("pppp")
 
     def worker_start(self):
-        self.pppp = app.svc.get("pppp")
-        self._tap = Queue()
-
-        self.pppp.handlers.append(self.handler)
+        # Don't get PPPP service at start - get fresh one for each transfer
+        log.debug("File transfer service started")
 
     def worker_run(self, timeout):
         self.idle(timeout=timeout)
 
     def worker_stop(self):
-        self.pppp.handlers.remove(self.handler)
-        del self._tap
-
-        app.svc.put("pppp")
+        # Nothing to clean up since we get/put PPPP service per transfer
+        log.debug("File transfer service stopped")

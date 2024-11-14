@@ -14,7 +14,7 @@ Routes:
     - /video: Handles the video streaming/downloading feature in the Flask app
     - /: Renders the html template for the root route, which is the homepage of the Flask app
     - /api/version: Returns the version details of api and server as dictionary
-    - /api/ankerctl/config/upload: Handles the uploading of configuration file \
+    - /api/ankerctl/config/upload: Handles the uploading of configuration file \s
         to Flask server and returns a HTML redirect response
     - /api/ankerctl/server/reload: Reloads the Flask server and returns a HTML redirect response
     - /api/files/local: Handles the uploading of files to Flask server and returns a dictionary containing file details
@@ -28,6 +28,7 @@ Services:
 """
 import json
 import logging as log
+import time
 
 from datetime import datetime
 from secrets import token_urlsafe as token
@@ -36,7 +37,6 @@ from flask_sock import Sock
 from user_agents import parse as user_agent_parse
 
 from libflagship import ROOT_DIR
-
 from web.lib.service import ServiceManager, RunState, ServiceStoppedError
 
 import web.config
@@ -47,7 +47,6 @@ import cli.util
 import cli.config
 import cli.countrycodes
 
-
 app = Flask(__name__, root_path=ROOT_DIR, static_folder="static", template_folder="static")
 # secret_key is required for flash() to function
 app.secret_key = token(24)
@@ -56,13 +55,14 @@ app.svc = ServiceManager()
 
 sock = Sock(app)
 
-
 # autopep8: off
 import web.service.pppp
 import web.service.video
 import web.service.mqtt
 import web.service.filetransfer
 # autopep8: on
+
+from libflagship.ppppapi import PPPPState  # Import PPPPState after web.service.pppp
 
 
 PRINTERS_WITHOUT_CAMERA = ["V8110"]
@@ -87,6 +87,12 @@ def video(sock):
     """
     if not app.config["login"] or not app.config["video_supported"]:
         return
+        
+    vq = app.svc.svcs.get("videoqueue")
+    if not vq or not vq.video_enabled:
+        log.info("Video websocket requested but video is disabled")
+        return
+        
     for msg in app.svc.stream("videoqueue"):
         sock.send(msg.data)
 
@@ -97,27 +103,108 @@ def pppp_state(sock):
     Handles a status request for the 'pppp' stream service through websocket
     """
     if not app.config["login"]:
+        log.info("Websocket connection rejected: not logged in")
         return
 
     pppp_connected = False
+    log.info("Starting PPPP state websocket handler")
 
-    # A timeout of 3 sec should be fine, as the printer continuously sends
-    # PktAlive messages every second on an established connection.
-    for chan, msg in app.svc.stream("pppp", timeout=3.0):
-        if not pppp_connected:
-            with app.svc.borrow("pppp") as pppp:
-                if pppp.connected:
-                    pppp_connected = True
-                    # this is the only message ever sent on this connection
-                    # to signal that the pppp connection is up
-                    sock.send(json.dumps({"status": "connected"}))
-                    log.info(f"PPPP connection established")
-    if not pppp_connected:
-        log.warning(f'[{datetime.now().strftime("%d/%b/%Y %H:%M:%S")}] PPPP connection lost, restarting PPPPService')
-        try:
-            app.svc.get("pppp").worker_start()
-        except TimeoutError:
-            app.svc.get("pppp").restart()
+    try:
+        while True:  # Keep websocket handler running
+            try:
+                # Keep track of last message time to detect stalls
+                last_msg_time = time.time()
+                last_status_time = 0
+                
+                for chan, msg in app.svc.stream("pppp", timeout=1.0):  # Poll more frequently
+                    # Update last message time
+                    last_msg_time = time.time()
+                    
+                    # Check PPPP connection status periodically
+                    if time.time() - last_status_time >= 3.0:  # Check every 3 seconds
+                        pppp = app.svc.get("pppp")  # Use get instead of borrow to avoid stopping service
+                        if pppp:
+                            # Check both connected flag and state
+                            current_connected = (pppp.connected and 
+                                              pppp._api and 
+                                              pppp._api.state == PPPPState.Connected)
+                            
+                            if current_connected:
+                                if not pppp_connected:
+                                    pppp_connected = True
+                                    # Send initial connected status
+                                    sock.send(json.dumps({"status": "connected"}))
+                                    log.info("PPPP connection established, sent status to websocket")
+                                    if hasattr(pppp._api, 'sock') and pppp._api.sock:
+                                        try:
+                                            local_addr = pppp._api.sock.getsockname()
+                                            remote_addr = pppp._api.sock.getpeername()
+                                            log.info(f"PPPP socket info at websocket connect - Local: {local_addr}, Remote: {remote_addr}")
+                                        except:
+                                            pass
+                                    log.info("PPPP service state at websocket connect:")
+                                    log.info(f"- Connected: {pppp.connected}")
+                                    if pppp._api:
+                                        log.info(f"- API state: {pppp._api.state}")
+                                        log.info(f"- API stopped: {pppp._api.stopped.is_set()}")
+                                        log.info(f"- Last heartbeat: {datetime.fromtimestamp(pppp._last_heartbeat).strftime('%H:%M:%S')}")
+                            else:
+                                if pppp_connected:
+                                    # Connection was lost, send disconnected status
+                                    sock.send(json.dumps({"status": "disconnected"}))
+                                    log.info("PPPP connection lost, sent status to websocket")
+                                    pppp_connected = False
+                        last_status_time = time.time()
+                    
+                    # Check for message stalls
+                    if time.time() - last_msg_time > 10.0:  # Increased from 5s to 10s
+                        log.warning("No PPPP messages received for 10 seconds")
+                        pppp = app.svc.get("pppp")
+                        if pppp and pppp._api:
+                            log.info("PPPP service state during stall:")
+                            log.info(f"- Connected: {pppp.connected}")
+                            log.info(f"- API state: {pppp._api.state}")
+                            log.info(f"- API stopped: {pppp._api.stopped.is_set()}")
+                            log.info(f"- Last heartbeat: {datetime.fromtimestamp(pppp._last_heartbeat).strftime('%H:%M:%S')}")
+                            if hasattr(pppp._api, 'sock') and pppp._api.sock:
+                                try:
+                                    local_addr = pppp._api.sock.getsockname()
+                                    remote_addr = pppp._api.sock.getpeername()
+                                    log.info(f"Socket info during stall - Local: {local_addr}, Remote: {remote_addr}")
+                                except:
+                                    pass
+                        break  # Break inner loop to trigger reconnect
+                        
+                if not pppp_connected:
+                    log.warning(f'[{datetime.now().strftime("%d/%b/%Y %H:%M:%S")}] PPPP connection lost, restarting PPPPService')
+                    pppp = app.svc.get("pppp")
+                    if pppp:
+                        if hasattr(pppp._api, 'sock') and pppp._api.sock:
+                            try:
+                                local_addr = pppp._api.sock.getsockname()
+                                remote_addr = pppp._api.sock.getpeername()
+                                log.info(f"PPPP socket info before restart - Local: {local_addr}, Remote: {remote_addr}")
+                            except:
+                                pass
+                        log.info("PPPP service state before restart:")
+                        log.info(f"- Connected: {pppp.connected}")
+                        if pppp._api:
+                            log.info(f"- API state: {pppp._api.state}")
+                            log.info(f"- API stopped: {pppp._api.stopped.is_set()}")
+                            log.info(f"- Last heartbeat: {datetime.fromtimestamp(pppp._last_heartbeat).strftime('%H:%M:%S')}")
+                        pppp.worker_start()
+                    time.sleep(1)  # Wait before retrying connection
+            except Exception as e:
+                if "WebSocket is already closed" in str(e):
+                    log.info("WebSocket connection closed by client")
+                    break
+                log.warning(f"Error in PPPP state websocket handler: {e}")
+                log.info("Stack trace:", exc_info=True)
+                time.sleep(1)  # Wait before retrying connection
+                continue  # Continue outer loop to retry connection
+    finally:
+        log.info("PPPP state websocket handler ending")
+
 
 
 @sock.route("/ws/ctrl")
@@ -145,6 +232,17 @@ def ctrl(sock):
         if "quality" in msg:
             with app.svc.borrow("videoqueue") as vq:
                 vq.api_video_mode(msg["quality"])
+                
+        if "video_enabled" in msg:
+            vq = app.svc.svcs.get("videoqueue")
+            if vq:
+                vq.set_video_enabled(msg["video_enabled"])
+                if msg["video_enabled"]:
+                    if vq.state == RunState.Stopped:
+                        vq.start()
+                else:
+                    if vq.state == RunState.Running:
+                        vq.stop()
 
 
 @app.get("/video")
@@ -155,17 +253,21 @@ def video_download():
     def generate():
         if not app.config["login"] or not app.config["video_supported"]:
             return
-        # start videoqueue if it is not running
+        # Only start videoqueue if video is enabled
         vq = app.svc.svcs.get("videoqueue")
-        if vq and vq.state == RunState.Stopped:
-            try:
-                vq.start()
-                vq.await_ready()
-            except ServiceStoppedError:
-                log.error("VideoQueueService could not be started")
+        if vq:
+            if not vq.video_enabled:
+                log.info("Video stream requested but video is disabled")
                 return
-        for msg in app.svc.stream("videoqueue"):
-            yield msg.data
+            if vq.state == RunState.Stopped:
+                try:
+                    vq.start()
+                    vq.await_ready()
+                except ServiceStoppedError:
+                    log.error("VideoQueueService could not be started")
+                    return
+            for msg in app.svc.stream("videoqueue"):
+                yield msg.data
 
     return Response(generate(), mimetype="video/mp4")
 
@@ -512,3 +614,6 @@ def webserver(config, printer_index, host, port, insecure=False, **kwargs):
         if cfg.printers:
             register_services(app)
         app.run(host=host, port=port)
+
+
+

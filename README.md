@@ -4,6 +4,8 @@ Welcome! This repository contains `ankerctl`, a command-line interface and web U
 
 **NOTE:** This is our first major release and while we have tested thoroughly there may be bugs. If you encounter one please open a [Github Issue](https://github.com/Ankermgmt/ankermake-m5-protocol/issues/new/choose)
 
+**IMPORTANT:** Video streaming functionality is currently not working in the latest version. This feature is being investigated and will be fixed in a future update.
+
 The `ankerctl` program uses [`libflagship`](documentation/developer-docs/libflagship.md), a library for communicating with the numerous different protocols required for connecting to an AnkerMake M5 or M5C printer. The `libflagship` library is also maintained in this repo, under [`libflagship/`](libflagship/).
 
 ![Screenshot of ankerctl](/documentation/web-interface.png "Screenshot of ankerctl web interface")
@@ -22,13 +24,14 @@ The `ankerctl` program uses [`libflagship`](documentation/developer-docs/libflag
 
  - Send print jobs (gcode files) to the printer.
 
- - Stream camera image/video to your computer (AnkerMake M5 only).
+ - Stream camera image/video to your computer (AnkerMake M5 only) - Currently not working.
 
  - Easily monitor print status.
 
 ### Upcoming and Planned Features
 
  - Integration into other software. Home Assistant? Cura plugin?
+ - Fix for video streaming 
 
 Let us know what you want to see; Pull requests always welcome! :smile:
 
@@ -104,7 +107,7 @@ Follow the instructions for a [git install](documentation/install-from-git.md) (
 > **NOTE:** 
 > The cached login info contains sensitive details. In particular, the `user_id` field is used when connecting to MQTT servers, and essentially works as a password. Thus, the end of the value is redacted when printed to screen, to avoid accidentally disclosing sensitive information.
 
-2. Now that the printer information is known to `ankerctl`, the tool is ready to use. There’s a lot of available commands and utilities, use a command followed by `-h` to learn what your options are and get more in specific usage instructions.
+2. Now that the printer information is known to `ankerctl`, the tool is ready to use. There's a lot of available commands and utilities, use a command followed by `-h` to learn what your options are and get more in specific usage instructions.
 
 > **NOTE:**
 > As an alternative to using "config import" on the command line, it is possible to upload `login.json` through the web interface. Either method will work fine.
@@ -113,7 +116,7 @@ Follow the instructions for a [git install](documentation/install-from-git.md) (
 
 ### Web Interface
 
-1. Start the webserver by running one of the following commands in the folder you placed ankerctl in. You’ll need to have this running whenever you want to use the web interface or send jobs to the printer via a slicer:
+1. Start the webserver by running one of the following commands in the folder you placed ankerctl in. You'll need to have this running whenever you want to use the web interface or send jobs to the printer via a slicer:
 
    Docker Installation Method:
 
@@ -130,14 +133,14 @@ Follow the instructions for a [git install](documentation/install-from-git.md) (
 2. Navigate to [http://localhost:4470](http://localhost:4470) in your browser of choice on the same computer the webserver is running on. 
  
  > **Important**
- > If your `login.json` file was not automatically found, you’ll be prompted to upload your `login.json` file and the given the default path it should be found in your corresponding Operating System. 
+ > If your `login.json` file was not automatically found, you'll be prompted to upload your `login.json` file and the given the default path it should be found in your corresponding Operating System. 
    Once the `login.json` has been uploaded, the page will refresh and the web interface is usable.
 
 ### Printing Directly from PrusaSlicer
 
-ankerctl can allow slicers like PrusaSlicer (and its derivatives) to send print jobs to the printer using the slicer’s built in communications tools. The web server must be running in order to send jobs to the printer. 
+ankerctl can allow slicers like PrusaSlicer (and its derivatives) to send print jobs to the printer using the slicer's built in communications tools. The web server must be running in order to send jobs to the printer. 
 
-Currently there’s no way to store the jobs for later printing on the printer, so you’re limited to using the “Send and Print” option only to immediately start the print once it’s been transmitted. 
+Currently there's no way to store the jobs for later printing on the printer, so you're limited to using the "Send and Print" option only to immediately start the print once it's been transmitted. 
 
 Additional instructions can be found in the web interface.
 
@@ -166,12 +169,21 @@ Some examples:
 # print boaty.gcode
 ./ankerctl.py pppp print-file boaty.gcode
 
-# capture 4mb of video from camera
-./ankerctl.py pppp capture-video -m 4mb output.h264
-
 # select printer to use when you have multiple
 ./ankerctl.py -p <index> # index starts at 0 and goes up to the number of printers you have
+
+# Note: Video capture functionality is currently not working
+# capture 4mb of video from camera
+./ankerctl.py pppp capture-video -m 4mb output.h264
 ```
+
+### Recent Changes
+
+- Improved file transfer reliability with synchronous transfer handling
+- Added delay between connection attempts to prevent rapid reconnects
+- Better cleanup of PPPP connections after file transfers
+- Video streaming functionality temporarily disabled pending fixes
+- improved logging output with -v and -vv flags
 
 ## Legal
 

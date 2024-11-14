@@ -67,26 +67,33 @@ pass_env = click.make_pass_decorator(Environment)
 @click.option("--pppp-dump", required=False, metavar="<file.log>", type=click.Path(),
               help="Enable logging of PPPP data to <file.log>")
 @click.option("--insecure", "-k", is_flag=True, help="Disable TLS certificate validation")
-@click.option("--verbose", "-v", count=True, help="Increase verbosity")
+@click.option("--verbose", "-v", count=True, help="Increase verbosity (-v for detailed info, -vv for debug)")
 @click.option("--quiet", "-q", count=True, help="Decrease verbosity")
 @click.option("--printer", "-p", type=int, default=environ.get('PRINTER_INDEX') or 0, help="Select printer number")
+@click.option("--disable-video", "-nv", is_flag=True, help="Disable video queue worker")
 @click.pass_context
-def main(ctx, pppp_dump, verbose, quiet, insecure, printer):
+def main(ctx, pppp_dump, verbose, quiet, insecure, printer, disable_video):
     ctx.ensure_object(Environment)
     env = ctx.obj
-    levels = {
-        -3: log.CRITICAL,
-        -2: log.ERROR,
-        -1: log.WARNING,
-        0: log.INFO,
-        1: log.DEBUG,
-    }
-    env.config   = cli.config.configmgr()
+    
+    # Map verbosity levels
+    if verbose >= 2:  # -vv
+        level = log.DEBUG
+    elif verbose == 1:  # -v
+        level = log.VERBOSE if hasattr(log, 'VERBOSE') else 15
+    else:  # default
+        level = log.INFO
+    
+    # Apply quiet levels
+    level = min(log.CRITICAL, level + (quiet * 10))
+    
+    env.config = cli.config.configmgr()
     env.insecure = insecure
-    env.level = max(-3, min(verbose - quiet, 1))
+    env.level = level
     env.pppp_dump = pppp_dump
+    env.disable_video = disable_video
 
-    cli.logfmt.setup_logging(levels[env.level])
+    cli.logfmt.setup_logging(level)
 
     if insecure:
         import urllib3
@@ -119,7 +126,8 @@ def mqtt_monitor(env):
 
     for msg, body in client.fetchloop():
         log.info(f"TOPIC [{msg.topic}]")
-        log.debug(enhex(msg.payload[:]))
+        if env.level <= log.DEBUG:
+            log.debug(enhex(msg.payload[:]))
 
         for obj in body:
             try:
@@ -247,8 +255,9 @@ def pppp_lan_search(env, store):
 @pppp.command("print-file")
 @click.argument("file", required=True, type=click.File("rb"), metavar="<file>")
 @click.option("--no-act", "-n", is_flag=True, help="Test upload only (do not print)")
+@click.option("--rate-limit", "-r", type=int, default=10, help="Rate limit in Mbps (default: 10)")
 @pass_env
-def pppp_print_file(env, file, no_act):
+def pppp_print_file(env, file, no_act, rate_limit):
     """
     Transfer print job to printer, and start printing.
 
@@ -263,7 +272,7 @@ def pppp_print_file(env, file, no_act):
     fui = FileUploadInfo.from_file(file.name, user_name="ankerctl", user_id="-", machine_id="-")
     log.info(f"Going to upload {fui.size} bytes as {fui.name!r}")
     try:
-        cli.pppp.pppp_send_file(api, fui, data)
+        cli.pppp.pppp_send_file(api, fui, data, rate_limit_mbps=rate_limit)
         if no_act:
             log.info("File upload complete")
         else:
@@ -271,11 +280,13 @@ def pppp_print_file(env, file, no_act):
             api.aabb_request(b"", frametype=FileTransfer.END)
     except PPPPError as E:
         log.error(f"Could not send print job: {E}")
+        api.stop()  # Always stop on error
     else:
         if not no_act:
             log.info("Successfully sent print job")
-    finally:
-        api.stop()
+        if env.disable_video:
+            api.stop()  # Only stop if video is disabled
+
 
 
 @pppp.command("capture-video")
@@ -290,27 +301,35 @@ def pppp_capture_video(env, file, max_size):
     The output is in h264 ES (Elementary Stream) format. It can be played with
     "ffplay" from the ffmpeg program suite.
     """
+    if env.disable_video:
+        log.info("Video queue worker is disabled")
+        return
+
     env.load_config()
     api = cli.pppp.pppp_open(env.config, env.printer_index, dumpfile=env.pppp_dump)
 
-    cmd = {"commandType": P2PSubCmdType.START_LIVE, "data": {"encryptkey": "x", "accountId": "y"}}
-    api.send_xzyh(json.dumps(cmd).encode(), cmd=P2PCmdType.P2P_JSON_CMD)
     try:
-        with tqdm(unit="b", total=max_size, unit_scale=True, unit_divisor=1024) as bar:
-            size = 0
-            while True:
-                d = api.recv_xzyh(chan=1)
-                size += len(d.data)
-                file.write(d.data)
-                bar.set_postfix(size=cli.util.pretty_size(size), refresh=False)
-                bar.update(len(d.data))
-                if size >= max_size:
-                    break
+        if not env.disable_video:
+            cmd = {"commandType": P2PSubCmdType.START_LIVE, "data": {"encryptkey": "x", "accountId": "y"}}
+            api.send_xzyh(json.dumps(cmd).encode(), cmd=P2PCmdType.P2P_JSON_CMD)
+            with tqdm(unit="b", total=max_size, unit_scale=True, unit_divisor=1024) as bar:
+                size = 0
+                while True:
+                    d = api.recv_xzyh(chan=1)
+                    size += len(d.data)
+                    file.write(d.data)
+                    bar.set_postfix(size=cli.util.pretty_size(size), refresh=False)
+                    bar.update(len(d.data))
+                    if size >= max_size:
+                        break
     finally:
+        # Always send CLOSE_LIVE command to ensure video stream is stopped
         cmd = {"commandType": P2PSubCmdType.CLOSE_LIVE}
         api.send_xzyh(json.dumps(cmd).encode(), cmd=P2PCmdType.P2P_JSON_CMD)
+        api.stop()
 
-    log.info(f"Successfully captured {cli.util.pretty_size(size)} video stream into {file.name}")
+    if not env.disable_video:
+        log.info(f"Successfully captured {cli.util.pretty_size(size)} video stream into {file.name}")
 
 
 @main.group("http", help="Low-level http api access")
@@ -569,3 +588,4 @@ def webserver(env, host, port):
 
 if __name__ == "__main__":
     main()
+
