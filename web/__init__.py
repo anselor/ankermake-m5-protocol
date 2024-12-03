@@ -67,6 +67,114 @@ import web.service.filetransfer
 
 PRINTERS_WITHOUT_CAMERA = ["V8110"]
 
+# MQTT Details for CuraEndpoint Functions
+curaEndpointData___api_printer = {
+    "temperature": {
+        "tool0": {
+            "actual": 0.0,
+            "target": 0.0
+        },
+        "bed": {
+            "actual": 0.0,
+            "target": 0.0
+        }
+    },
+    "state": {
+        "text": "Operational",
+        "flags": {
+            "operational": True,
+            "paused": False,
+            "printing": False,
+            "cancelling": False,
+            "pausing": False,
+            "sdReady": True,
+            "error": False,
+            "ready": True,
+            "closedOrError": False
+        }
+    }
+}
+curaEndpointData___api_job = {
+    "job": {
+        "file": {
+            "name": "none.gcode",
+            "origin": "local"
+        },
+    },
+    "progress": {
+        "completion": 0.1,
+        "printTime": 0,
+        "printTimeLeft": 0
+    },
+    "state": "Operational"
+}
+
+def parseMqttForCuraOctoPrint(mqttData):
+    #log.info(f"MQTT message: {mqttData}")
+    match mqttData['commandType']:
+        case 1000:
+            # @DESC: ???
+            # @MQTT: {'commandType': 1000, 'subType': 1, 'value': 0}
+            # subtype 1 value 0 = Idle?
+            # subtype 1 value 1 = Printing ?
+            # subtype 1 value 8 = Preheat ?
+            if "subType" in mqttData and mqttData["subType"] == 1 and mqttData["value"] == 1:
+                curaEndpointData___api_job["state"] = "Printing";
+            if "subType" in mqttData and mqttData["subType"] == 1 and mqttData["value"] == 8:
+                curaEndpointData___api_job["state"] = "Operational";
+            if "subType" in mqttData and mqttData["subType"] == 1 and mqttData["value"] == 0:
+                curaEndpointData___api_job["state"] = "Operational";
+        case 1001:
+            # @DESC Returns Print Details
+            # @MQTT: {'commandType': 1001, 'time': 298,     'totalTime': 0,  'progress': 0, 'aiFlag': 0, 'modelType': 1, 'startLeftTime': 0, 'filamentUsed': 314, 'filamentUnit': 'mm', 'name': 'testcube.gcode', 'img': '', 'modelId': 'M1515155555555586', 'AISwitch': 0, 'AISensitivity': 0, 'AIPausePrint': 0, 'AIJoinImproving': 0, 'realSpeed': 0, 'task_id': '7a62455d-93a1-103d-8005-95d22d0e0eca'}
+            # @MQTT: {'commandType': 1001, 'saveTime': 340, 'totalTime': 324,                                                                'filamentUsed': 314, 'filamentUnit': 'mm', 'name': 'testcube.gcode',                                                                                                                                        'task_id': '1f8d2f11-93a4-103d-b4e7-55153c1c7527', 'timestamp': 1733231194}
+            curaEndpointData___api_job["job"]["file"]["name"] = mqttData["name"];
+            curaEndpointData___api_job["progress"]["printTime"] = mqttData["totalTime"];
+            curaEndpointData___api_job["progress"]["printTimeLeft"] = mqttData["time"];
+        case 1003:
+            # @DESC: Returns Nozzle Temp
+            # @MQTT: {'commandType': 1003, 'currentTemp': 18512, 'targetTemp': 0}
+            # @Hint: temp / 100 = °C
+            curaEndpointData___api_printer["temperature"]["tool0"]["actual"] = (mqttData["currentTemp"] * 0.01);
+            curaEndpointData___api_printer["temperature"]["tool0"]["target"] = (mqttData["targetTemp"] * 0.01);
+        case 1004:
+            # @DESC: Returns Bed Temp
+            # @MQTT: {'commandType': 1004, 'currentTemp': 4128, 'targetTemp': 0}
+            # @Hint: temp / 100 = °C
+            curaEndpointData___api_printer["temperature"]["bed"]["actual"] = (mqttData["currentTemp"] * 0.01);
+            curaEndpointData___api_printer["temperature"]["bed"]["target"] = (mqttData["targetTemp"] * 0.01);
+        case 1006:
+            # Print Speed
+            # print-speed = ${data.value}mm/s
+            x=None;
+        case 1026:
+            # @MQTT:  {'commandType': 1026, 'value': 0}
+            x=None;
+        case 1027:
+            # @MQTT:  {'commandType': 1037, 'value': 1}
+            x=None;
+        case 1037:
+            # @MQTT {'value': 1, 'commandType': 1037}
+            x=None;
+        case 1052:
+            # DESC: Layer information
+            # @MQTT: {'commandType': 1052, 'total_layer': 500, 'real_print_layer': 62}
+            # const layer = `${data.real_print_layer} / ${data.total_layer}`;
+            #    $("#print-layer").text(layer);
+            x=None;
+        case 1068:
+            # This could be cancel job on Display
+            # {'commandType': 1068, 'name': 'testcube.gcode', 'img': '', 'totalTime': 70, 'filamentUsed': 314, 'filamentUnit': 'mm', 'saveTime': 73, 'trigger': 2}
+            x=None;
+        case 1081:
+            # @MQTT: {'commandType': 1081, 'value': -1, 'progress': 0}
+            x=None;
+        case 1084:
+            # @MQTT: {'commandType': 1084, 'devType': 1, 'switchStatus': 0, 'progress': 0}
+            x=None;
+        case _:
+             log.warning(f"Unknown MQTT message: {mqttData}")
+
 
 @sock.route("/ws/mqtt")
 def mqtt(sock):
@@ -78,6 +186,7 @@ def mqtt(sock):
     for data in app.svc.stream("mqttqueue"):
         log.debug(f"MQTT message: {data}")
         sock.send(json.dumps(data))
+        parseMqttForCuraOctoPrint(data)
 
 
 @sock.route("/ws/video")
@@ -436,6 +545,23 @@ def app_api_files_local():
         )
 
     return {}
+
+
+@app.get("/plugin/appkeys/probe")
+def app_plugin_appkeys_probe():
+    return {"status": "success", "appkey": "valid_app_key_1234567890", "message": "App key is valid."}
+
+@app.get("/api/settings")
+def app_api_settings():
+    return {"status": "success"}
+
+@app.get("/api/printer")
+def app_api_printer():
+  return curaEndpointData___api_printer
+
+@app.get("/api/job")
+def app_api_job():
+    return curaEndpointData___api_job
 
 
 @app.get("/api/ankerctl/status")
