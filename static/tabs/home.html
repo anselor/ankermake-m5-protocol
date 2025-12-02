@@ -97,18 +97,24 @@
                                     >
                                         0°C
                                     </span>
-                                    <input
-                                        type="text"
+                                    <button
+                                        type="button" class="btn btn-secondary"
                                         id="set-nozzle-temp"
                                         name="set-nozzle-temp"
-                                        class="form-control text-center"
-                                        value="0°C"
+                                        class="input-group-text"
                                         title="Target Nozzle Temperature"
                                         aria-label="Target Nozzle Temperature"
                                         aria-describedby="nozzleGroup"
+                                        data-bs-toggle="modal" data-bs-target="#popupModalInput"
+                                        data-input-type="number"
+                                        data-input-min="0"
+                                        data-input-max="300"
+                                        data-input-icon-class="icon-hotend"
+                                        data-input-unit="°C"
                                         disabled
-                                        readonly
-                                    />
+                                    >
+                                        0°C
+                                    </button>
                                 </div>
                             </div>
                             <div class="col-md-6">
@@ -124,18 +130,24 @@
                                     >
                                         0°C
                                     </span>
-                                    <input
-                                        type="text"
+                                    <button
+                                        type="button" class="btn btn-secondary"
                                         id="set-bed-temp"
                                         name="set-bed-temp"
-                                        class="form-control text-center"
-                                        value="0°C"
+                                        class="input-group-text"
                                         title="Target Bed Temperature"
                                         aria-label="Target Bed Temperature"
                                         aria-describedby="bedGroup"
+                                        data-bs-toggle="modal" data-bs-target="#popupModalInput"
+                                        data-input-type="number"
+                                        data-input-min="0"
+                                        data-input-max="100"
+                                        data-input-icon-class="icon-bed"
+                                        data-input-unit="°C"
                                         disabled
-                                        readonly
-                                    />
+                                    >
+                                        0°C
+                                    </button>
                                 </div>
                             </div>
                         </div>

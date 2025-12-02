@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2024-12-02
+ - Add HTTP Endpoints (/plugin/appkeys/probe,/api/settings,/api/printer,/api/job) they are all a bare minimum for Curas OctoPrint Plugin
+   Do not use Long Filenames as it seams AnkerMake can't handle it. Percentage Value is calcued in CuraPlugin and so
+   they are not correct.
+
 ## [1.0.1] - 2024-01-15
 
  - Fixes MQTT connection errors post AnkerMake Firmware Upgrades
